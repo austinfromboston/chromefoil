@@ -32,15 +32,16 @@ module Capybara::Chromefoil
     end
 
     def visit(url)
+      command 'Network.enable'
       command 'Page.navigate', url: url
     end
 
     def current_url
-      command 'current_url'
+      server.socket.current_url
     end
 
     def status_code
-      command 'status_code'
+      server.socket.last_status_code
     end
 
     def body
@@ -362,7 +363,7 @@ module Capybara::Chromefoil
       command 'clear_memory_cache'
     end
 
-    def command(name, params)
+    def command(name, params={})
       cmd = Command.new(name, params)
       log cmd.message
 

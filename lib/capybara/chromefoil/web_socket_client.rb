@@ -6,7 +6,10 @@ require 'websocket-client-simple'
 
 module Capybara::Chromefoil
   class WsClientWrapper < WebSocket::Client::Simple::Client
-    attr_accessor :results, :commands
+    attr_accessor :results, :commands, :events
+    HANDLERS = {
+      "Network.responseReceived" => :network_response_received
+    }
 
     def self.connect(url, options={})
       client = new
@@ -20,10 +23,34 @@ module Capybara::Chromefoil
       @results = {}
       super
     end
+
+    def call_handler(data)
+      #puts data.to_s
+      return unless HANDLERS[data['method']]
+      __send__ HANDLERS[data['method']], data['params']
+    end
+
+    def last_page_load_command_id
+      last_loaded_page = commands.to_a.reverse.find do |(_, msg)|
+        msg =~ /Page.navigate/
+      end
+      last_loaded_page[0] if last_loaded_page
+    end
+
+    def network_response_received(params)
+      response_request = params['requestId']
+      response_frame = params['frameId']
+      return unless response_request == response_frame
+
+      related_result = results[last_page_load_command_id]
+      if related_result.last.fetch('result', {}).fetch('frameId') == response_frame
+        results[last_page_load_command_id] << params
+      end
+    end
   end
 
   class WebSocketClient
-    attr_reader :host, :port, :uri, :timeout
+    attr_reader :host, :port, :uri, :timeout, :current_tab
     attr_accessor :tabs, :ws
 
     def initialize( host:, port:, timeout: 10)
@@ -36,13 +63,27 @@ module Capybara::Chromefoil
       "http://#{host}:#{port}/json"
     end
 
+    def current_url
+      current_tab_id = current_tab['id']
+      refresh_tabs
+      tabs.find { |t| t['id'] == current_tab_id }['url']
+    end
+
+    def last_status_code
+      ws.results[ws.last_page_load_command_id].last.fetch('response', {}).fetch('status')
+    end
+
     def tab_ws_url(tab_index)
+      refresh_tabs
+      tabs[tab_index]['webSocketDebuggerUrl']
+    end
+
+    def refresh_tabs
       uri = URI.parse(base_endpoint_url)
       response = Net::HTTP.get_response(uri)
       self.tabs = JSON.parse(response.body).select do |tab_data|
         tab_data['type'] == "page"
       end
-      tabs[tab_index]['webSocketDebuggerUrl']
     rescue Errno::ECONNREFUSED
       p "browser not yet ready, retrying"
       sleep 0.5
@@ -52,12 +93,15 @@ module Capybara::Chromefoil
     def connect(tab_index: 0)
       if(self.ws == nil)
         self.ws = WsClientWrapper.connect tab_ws_url(tab_index)
+        @current_tab = tabs[tab_index]
 
         ws.on :message do |msg|
-          puts msg.data
           data = JSON.parse(msg.data)
           if data.has_key? 'id'
-            results[data['id']] << msg.data
+            results[data['id']] << data
+            p msg.data
+          elsif data.has_key? 'method'
+            call_handler(data)
           end
         end
 
@@ -67,13 +111,17 @@ module Capybara::Chromefoil
 
         ws.on :close do |e|
           p "closed"
-          p e
+          p e.to_s
           #exit 1
         end
 
         ws.on :error do |e|
           p "error received"
-          p e
+          p e.to_s
+        end
+
+        while !ws.open?
+          sleep 0.1
         end
       end
 
@@ -90,7 +138,7 @@ module Capybara::Chromefoil
           while ws.results[command_id].length == 0 do
             sleep 0.05
           end
-          return ws.results[command_id].last
+          return JSON.dump(ws.results[command_id].last)
           #ws.close
         end
       end

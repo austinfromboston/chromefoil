@@ -9,7 +9,7 @@ module Capybara::Chromefoil
       @last_id += 1
     end
 
-    def initialize(method, params)
+    def initialize(method, params={})
       @id = Command.next_command_id
       @method= method
       @params = params
