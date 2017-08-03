@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+
+require 'rubygems'
+require 'websocket-client-simple'
+require './lib/chromefoil/client'
+
+client = Chromefoil::Client.new
+
+client.connect do |ws|
+  loop do
+    client.send_message STDIN.gets.strip
+  end
+end
+
