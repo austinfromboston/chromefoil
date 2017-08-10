@@ -5,13 +5,14 @@ $:.unshift lib unless $:.include?(lib)
 
 module Capybara
   module Chromefoil
-    require 'capybara/chromefoil/driver'
     require 'capybara/chromefoil/browser'
+    require 'capybara/chromefoil/chrome_client'
     require 'capybara/chromefoil/command'
     require 'capybara/chromefoil/dev_tools_client'
-    require 'capybara/chromefoil/web_socket_client'
-    require 'capybara/chromefoil/chrome_client'
+    require 'capybara/chromefoil/driver'
     require 'capybara/chromefoil/errors'
+    require 'capybara/chromefoil/node'
+    require 'capybara/chromefoil/web_socket_client'
   end
 end
 

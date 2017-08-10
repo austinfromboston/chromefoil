@@ -4,7 +4,7 @@ require 'time'
 
 module Capybara::Chromefoil
   class Browser
-    #ERROR_MAPPINGS = {
+    ERROR_MAPPINGS = {
       #'Chromefoil.JavascriptError' => JavascriptError,
       #'Chromefoil.FrameNotFound'   => FrameNotFound,
       #'Poltergeist.InvalidSelector' => InvalidSelector,
@@ -12,7 +12,7 @@ module Capybara::Chromefoil
       #'Poltergeist.NoSuchWindowError' => NoSuchWindowError,
       #'Poltergeist.UnsupportedFeature' => UnsupportedFeature,
       #'Poltergeist.KeyError' => KeyError,
-    #}
+    }
 
     attr_reader :server, :client, :logger
 
@@ -45,88 +45,177 @@ module Capybara::Chromefoil
     end
 
     def body
-      command 'body'
+      doc = command "DOM.getDocument"
+      docNode = doc.fetch('root', {})
+      htmlNode = docNode['children'].find do |n|
+        n['nodeName'] == "HTML"
+      end
+      bodyNode = htmlNode['children'].find do |n|
+        n['nodeName'] == 'BODY'
+      end
+      command("DOM.getOuterHTML", nodeId: bodyNode['nodeId']).fetch('outerHTML')
     end
 
     def source
-      command 'source'
+      doc = command "DOM.getDocument"
+      docNode = doc.fetch('root', {})
+      command("DOM.getOuterHTML", nodeId: docNode['nodeId']).fetch('outerHTML')
     end
 
     def title
-      command 'title'
+      server.socket.current_page_title
     end
 
-    def parents(page_id, id)
-      command 'parents', page_id, id
+    def parents(node_id)
+      command "DOM.enable"
+      doc = command "DOM.getFlattenedDocument", depth: -1
+      nodes_by_id = doc['nodes'].reduce({}) { |memo, n| memo[n['nodeId']] = n; memo }
+      target_node = nodes_by_id[node_id]
+      parents = []
+      while target_node && target_node.has_key?('parentId')
+        parent_node = nodes_by_id[target_node['parentId']]
+        parents << parent_node if parent_node
+        target_node = parent_node
+      end
+      parents
     end
 
     def find(method, selector)
-      result = command('find', method, selector)
-      result['ids'].map { |id| [result['page_id'], id] }
+      if method == :xpath
+        # this one only works with propriatary path, not xpath
+        #result = command "DOM.pushNodeByPathToFrontend", path: selector
+
+        # get the length of matching nodeset from the console then query for each one
+        # this one should work but the nodeId always comes back as 0
+        raise "who is even using xpath?"
+        exp = "$x('#{selector}').length;"
+
+        match_length = b.command "Runtime.evaluate", expression: exp, includeCommandLineAPI: true
+
+        (0...match_length['result']['value']).map do |i|
+          exp2 = "$x('#{selector}')[#{i}];"
+          search = b.command "Runtime.evaluate", expression: exp2,  includeCommandLineAPI: true
+          nodeResult = b.command "DOM.requestNode", objectId: search['result']['objectId']
+          nodeResult['nodeId']
+        end
+      elsif method == :css
+        doc = command "DOM.getDocument"
+        docNode = doc.fetch('root', {})
+        result = command "DOM.querySelectorAll", selector: selector, nodeId: docNode['nodeId']
+        result['nodeIds']
+      else
+        raise "find method: #{method} not supported"
+      end
     end
 
-    def find_within(page_id, id, method, selector)
-      command 'find_within', page_id, id, method, selector
+    def find_within(node_id, method, selector)
+      if method == :xpath
+        # probably a big box of fail
+        baseNode = command "DOM.resolveNode", nodeId: node_id
+
+        exp = <<-XPATH
+          function(search_xpath)
+            var x = document.evaluate(
+             search_xpath,
+             this,
+             null,
+             XPathResult.ANY_TYPE,
+             null
+            );
+            var x2 = [];
+            while(x2[x2.length] = x.iterateNext()) {};
+            return x2;
+          }
+        XPATH
+
+        foundNodes = command "Runtime.callFunctionOn", objectId: baseNode['result']['objectId'], functionDeclaration: exp, arguments: [selector]
+        # some kind of transformation on foundNodes if this even worked
+      elsif method == :css
+        result = command "DOM.querySelectorAll", selector: selector, nodeId: node_id
+        result['nodeIds']
+      else
+        raise "find_within method: #{method} not supported"
+      end
     end
 
-    def all_text(page_id, id)
-      command 'all_text', page_id, id
+    def all_text(node_id)
+      object_ref = command "DOM.resolveNode", nodeId: node_id
+      script = "function() { return this.textContent; }"
+      result = command 'Runtime.callFunctionOn', objectId: object_ref['object']['objectId'], functionDeclaration: script
+      result['result']['value']
     end
 
-    def visible_text(page_id, id)
-      command 'visible_text', page_id, id
+    def visible_text(node_id)
+      object_ref = command "DOM.resolveNode", nodeId: node_id
+      script = "function() { return this.innerText; }"
+      result = command 'Runtime.callFunctionOn', objectId: object_ref['object']['objectId'], functionDeclaration: script
     end
 
-    def delete_text(page_id, id)
-      command 'delete_text', page_id, id
+    def delete_text(node_id)
+      object_ref = command "DOM.resolveNode", nodeId: node_id
+      script = "function() { this.innerText = ''; }"
+      command 'Runtime.callFunctionOn', objectId: object_ref['object']['objectId'], functionDeclaration: script
     end
 
-    def property(page_id, id, name)
-      command 'property', page_id, id, name.to_s
+    def property(node_id, name)
+      container_object = b.command "DOM.resolveNode", nodeId: node_id
+      script = 'function(propertyName) { return this[propertyName]; }'
+      result = command "Runtime.callFunctionOn", objectId: container_object['object']['objectId'], functionDeclaration: script
+      result['value']
     end
 
-    def attributes(page_id, id)
-      command 'attributes', page_id, id
+    def attributes(node_id)
+      result = command "DOM.getAttributes", nodeId: node_id
+      Hash[*result['attributes']]
     end
 
-    def attribute(page_id, id, name)
-      command 'attribute', page_id, id, name.to_s
+    def attribute(node_id, name)
+      attributes(node_id)[name]
     end
 
-    def value(page_id, id)
-      command 'value', page_id, id
+    def value(node_id)
+      property(node_id, 'value')
     end
 
-    def set(page_id, id, value)
-      command 'set', page_id, id, value
+    def set(node_id, value)
+      container_object = b.command "DOM.resolveNode", nodeId: node_id
+      script = 'function(value) { this.value = value; }'
+      command "Runtime.callFunctionOn", objectId: container_object['object']['objectId'], functionDeclaration: script, arguments: [value]
     end
 
-    def select_file(page_id, id, value)
-      command 'select_file', page_id, id, value
+    def select_file(node_id, value)
+      command "DOM.setFileInputFiles", nodeId: node_id, files: [value]
     end
 
-    def tag_name(page_id, id)
-      command('tag_name', page_id, id).downcase
+    def tag_name(node_id)
+      result = command "DOM.resolveNode", nodeId: node_id
+      result['object']['description']
     end
 
     def visible?(page_id, id)
-      command 'visible', page_id, id
+      container_object = b.command "DOM.resolveNode", nodeId: node_id
+      script = "function() { return !!( this.offsetWidth || this.offsetHeight || this.getClientRects().length ); }"
+      result = command "Runtime.callFunctionOn", objectId: container_object['object']['objectId'], functionDeclaration: script
+      result['result']['value']
     end
 
-    def disabled?(page_id, id)
-      command 'disabled', page_id, id
+    def disabled?(node_id)
+      attribute(node_id, "disabled")
     end
 
     def click_coordinates(x, y)
-      command 'click_coordinates', x, y
+      command "Input.dispatchMouseEvent", type: "mousePressed", x: x, y: y
+      command "Input.dispatchMouseEvent", type: "mouseReleased", x: x, y: y
     end
 
     def evaluate(script, *args)
-      command 'evaluate', script, *args
+      # not clear what the args are for...
+      command "Runtime.evaluate", expression: script
     end
 
     def execute(script, *args)
-      command 'execute', script, *args
+      # not clear what the args are for...
+      command "Runtime.evaluate", expression: script
     end
 
     def within_frame(handle, &block)
@@ -189,8 +278,12 @@ module Capybara::Chromefoil
       switch_to_window(original)
     end
 
-    def click(page_id, id)
-      command 'click', page_id, id
+    def click(node_id)
+      command "DOM.getBoxModel", nodeId: node_id
+      box = b.command "DOM.getBoxModel", nodeId: my_link
+      xy = [(box['model']['content'][0] + box['model']['width'] / 2), (box['model']['content'][1] + box['model']['height'] / 2)]
+
+      b.click_coordinates *xy
     end
 
     def right_click(page_id, id)
@@ -376,7 +469,7 @@ module Capybara::Chromefoil
         klass = ERROR_MAPPINGS[json['error']['name']] || BrowserError
         raise klass.new(json['error'])
       else
-        json['results']
+        json['result']
       end
     rescue DeadClient
       restart

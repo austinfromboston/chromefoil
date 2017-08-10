@@ -25,7 +25,10 @@ module Capybara::Chromefoil
     end
 
     def call_handler(data)
-      #puts data.to_s
+      #if data['method'] !~ /Network\.|DOM\./
+      if data['method'] !~ /Network\./
+        puts "Received: #{data}"
+      end
       return unless HANDLERS[data['method']]
       __send__ HANDLERS[data['method']], data['params']
     end
@@ -38,12 +41,13 @@ module Capybara::Chromefoil
     end
 
     def network_response_received(params)
-      response_request = params['requestId']
-      response_frame = params['frameId']
-      return unless response_request == response_frame
+      response_request = params.fetch('requestId')
+      response_frame = params.fetch('frameId')
+      return unless response_request && response_request == response_frame
 
-      related_result = results[last_page_load_command_id]
-      if related_result.last.fetch('result', {}).fetch('frameId') == response_frame
+      related_result = results[last_page_load_command_id]&.last || {}
+
+      if related_result.fetch('result', {}).fetch('frameId') == response_frame
         results[last_page_load_command_id] << params
       end
     end
@@ -67,6 +71,12 @@ module Capybara::Chromefoil
       current_tab_id = current_tab['id']
       refresh_tabs
       tabs.find { |t| t['id'] == current_tab_id }['url']
+    end
+
+    def current_page_title
+      current_tab_id = current_tab['id']
+      refresh_tabs
+      tabs.find { |t| t['id'] == current_tab_id }['title']
     end
 
     def last_status_code
